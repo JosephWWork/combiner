@@ -56,6 +56,7 @@ class ReviewItem:
     same_value: bool
     duplicate_expression: str
     target_expression: str
+    duplicates_user_param: bool = False  # model param duplicating a user param
 
 
 @dataclass
@@ -133,7 +134,8 @@ def build_plan(params, standards=None, model_params=None):
         for dup, root in sorted(find_duplicates(everything).items()):
             if dup in model_by_name or root in model_by_name:
                 d, r = everything[dup], everything[root]
-                plan.review.append(ReviewItem(dup, root, values_match(d, r), d.expression, r.expression))
+                plan.review.append(ReviewItem(dup, root, values_match(d, r), d.expression, r.expression,
+                                              dup in model_by_name and root in by_name))
 
     for dup, root in sorted(find_duplicates(by_name).items()):
         d, r = by_name[dup], by_name[root]

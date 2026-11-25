@@ -151,16 +151,27 @@ def _limit(lines):
     return lines
 
 
+def _review_status(r):
+    if r.same_value:
+        return f'same value ({r.target_expression})'
+    return f'DIFFERENT value ({r.target_expression} vs {r.duplicate_expression})'
+
+
 def _review_lines(review):
-    lines = [f'Model parameters that could possibly be merged ({len(review)}) - '
-             'not changed, review manually:']
-    for r in review:
-        if r.same_value:
-            status = f'same value ({r.target_expression})'
-        else:
-            status = f'DIFFERENT value ({r.target_expression} vs {r.duplicate_expression})'
-        lines.append(f'  {r.duplicate} / {r.target}: {status}')
-    return _limit(lines)
+    of_user = [r for r in review if r.duplicates_user_param]
+    other = [r for r in review if not r.duplicates_user_param]
+    lines = []
+    if of_user:
+        lines.append(f'Model parameters duplicating a user parameter ({len(of_user)}) - not changed:')
+        lines += _limit([f'  {r.duplicate} (model) duplicates {r.target} (user): {_review_status(r)}'
+                         for r in of_user])
+    if other:
+        if lines:
+            lines.append('')
+        lines.append(f'Other model parameters that could possibly be merged ({len(other)}) - '
+                     'not changed, review manually:')
+        lines += _limit([f'  {r.duplicate} / {r.target}: {_review_status(r)}' for r in other])
+    return lines
 
 
 def _preview_text(plan, csv_note):

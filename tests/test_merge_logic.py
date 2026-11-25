@@ -74,6 +74,7 @@ class ModelParameterReview(unittest.TestCase):
         self.assertEqual(plan.mapping, {})
         self.assertEqual([(r.duplicate, r.target, r.same_value) for r in plan.review],
                          [('Depth_1', 'Depth', True), ('Len_1', 'Len', False), ('Width_1', 'Width', True)])
+        self.assertEqual([r.duplicate for r in plan.review if r.duplicates_user_param], ['Width_1'])
 
     def test_user_pairs_not_in_review(self):
         user = [P('Width', '50 mm', value=5.0), P('Width_1', '50 mm', value=5.0)]
