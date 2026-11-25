@@ -1,10 +1,11 @@
 {
   "autodeskProduct": "Fusion",
-  "type": "script",
+  "type": "addin",
   "author": "",
   "description": {
     "": "Merge duplicate user parameters (e.g. Width_1 into Width) after inserting and breaking links to other designs."
   },
   "supportedOS": "windows|mac",
-  "editEnabled": true
+  "editEnabled": true,
+  "runOnStartup": true
 }

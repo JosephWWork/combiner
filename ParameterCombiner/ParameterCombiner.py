@@ -1,9 +1,9 @@
-"""Fusion script: merge duplicate user parameters (Width_1 -> Width).
+"""Fusion add-in: merge duplicate user parameters (Width_1 -> Width).
 
-Run from Utilities > Scripts and Add-Ins. Flow:
-  1. Review the preview and confirm. Pairs with the same value are merged;
-     pairs with different values are listed for you to fix by hand (then
-     run again to merge them).
+Adds "Merge Duplicate Parameters" to Design > Solid > Modify. Clicking it:
+  1. Shows a preview and asks to confirm. Pairs with the same value are
+     merged; pairs with different values are listed for you to fix by hand
+     (then run again to merge them). Model-parameter duplicates are listed only.
   2. All references are re-pointed and duplicates deleted inside one command,
      so a single Ctrl+Z undoes the whole merge.
 """
@@ -23,55 +23,83 @@ importlib.reload(merge_logic)  # Fusion caches modules between runs
 
 CMD_ID = 'ParameterCombiner_MergeDuplicates'
 TITLE = 'Merge Duplicate Parameters'
+TOOLTIP = 'Merge duplicate user parameters (e.g. Width_1 into Width) and list any that need manual fixing.'
+PANEL_ID = 'SolidModifyPanel'                # Design workspace > Solid tab > Modify
+POSITION_AFTER = 'ChangeParameterCommand'   # place next to Change Parameters if found
+RESOURCES = os.path.join(_HERE, 'resources', 'MergeDuplicates')
 MAX_LINES = 40
 
 _app = None
 _ui = None
-_handlers = []
+_handlers = []      # kept for the add-in's lifetime
+_cmd_handlers = []  # per-click handlers, cleared when the command ends
 _plan = None
 _report = ''
 
 
 def run(context):
-    global _app, _ui, _plan
+    global _app, _ui
     try:
         _app = adsk.core.Application.get()
         _ui = _app.userInterface
-        design = adsk.fusion.Design.cast(_app.activeProduct)
-        if not design:
-            _ui.messageBox('Open a design first.', TITLE)
-            return
 
-        params = [_info(p) for p in design.userParameters]
-        model_params = _model_params(design)
-
-        _plan = merge_logic.build_plan(params, model_params)
-        if not (_plan.merges or _plan.conflicts or _plan.review):
-            _ui.messageBox('No duplicate parameters found.', TITLE)
-            return
-        if not _plan.merges:
-            _ui.messageBox('Nothing to merge automatically.\n\n' + _preview_text(_plan), TITLE)
-            return
-
-        answer = _ui.messageBox(_preview_text(_plan) + '\n\nProceed with merge?', TITLE,
-                                adsk.core.MessageBoxButtonTypes.YesNoButtonType,
-                                adsk.core.MessageBoxIconTypes.QuestionIconType)
-        if answer != adsk.core.DialogResults.DialogYes:
-            return
-
-        # Run the changes inside a command so they form one undo step.
-        cmd_def = _ui.commandDefinitions.itemById(CMD_ID)
-        if cmd_def:
-            cmd_def.deleteMe()
-        cmd_def = _ui.commandDefinitions.addButtonDefinition(CMD_ID, TITLE, '')
+        _remove_ui()  # clean up anything left from a previous load
+        cmd_def = _ui.commandDefinitions.addButtonDefinition(CMD_ID, TITLE, TOOLTIP, RESOURCES)
         on_created = _CommandCreatedHandler()
         cmd_def.commandCreated.add(on_created)
         _handlers.append(on_created)
-        cmd_def.execute()
-        adsk.autoTerminate(False)
+
+        panel = _ui.allToolbarPanels.itemById(PANEL_ID)
+        try:
+            panel.controls.addCommand(cmd_def, POSITION_AFTER, False)
+        except Exception:
+            panel.controls.addCommand(cmd_def)
     except Exception:
         if _ui:
-            _ui.messageBox('Failed:\n{}'.format(traceback.format_exc()), TITLE)
+            _ui.messageBox('Failed to start:\n{}'.format(traceback.format_exc()), TITLE)
+
+
+def stop(context):
+    try:
+        _remove_ui()
+    except Exception:
+        if _ui:
+            _ui.messageBox('Failed to stop:\n{}'.format(traceback.format_exc()), TITLE)
+    finally:
+        _handlers.clear()
+        _cmd_handlers.clear()
+
+
+def _remove_ui():
+    panel = _ui.allToolbarPanels.itemById(PANEL_ID)
+    control = panel.controls.itemById(CMD_ID) if panel else None
+    if control:
+        control.deleteMe()
+    cmd_def = _ui.commandDefinitions.itemById(CMD_ID)
+    if cmd_def:
+        cmd_def.deleteMe()
+
+
+def _prepare():
+    """Analyse the design and ask to confirm. Returns a Plan to apply, or None."""
+    design = adsk.fusion.Design.cast(_app.activeProduct)
+    if not design:
+        _ui.messageBox('Open a design first.', TITLE)
+        return None
+
+    params = [_info(p) for p in design.userParameters]
+    plan = merge_logic.build_plan(params, _model_params(design))
+    if not (plan.merges or plan.conflicts or plan.review):
+        _ui.messageBox('No duplicate parameters found.', TITLE)
+        return None
+    if not plan.merges:
+        _ui.messageBox('Nothing to merge automatically.\n\n' + _preview_text(plan), TITLE)
+        return None
+
+    answer = _ui.messageBox(_preview_text(plan) + '\n\nProceed with merge?', TITLE,
+                            adsk.core.MessageBoxButtonTypes.YesNoButtonType,
+                            adsk.core.MessageBoxIconTypes.QuestionIconType)
+    return plan if answer == adsk.core.DialogResults.DialogYes else None
 
 
 def _info(p):
@@ -211,23 +239,28 @@ def _apply(design, plan):
 
 class _CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
     def notify(self, args):
+        global _plan, _report
         try:
             cmd = args.command
-            cmd.isAutoExecute = True  # no dialog, run straight away
+            cmd.isAutoExecute = True  # no dialog; the message boxes are the UI
+            _report = ''
+            _plan = _prepare()
             on_execute = _ExecuteHandler()
             cmd.execute.add(on_execute)
-            _handlers.append(on_execute)
+            _cmd_handlers.append(on_execute)
             on_destroy = _DestroyHandler()
             cmd.destroy.add(on_destroy)
-            _handlers.append(on_destroy)
+            _cmd_handlers.append(on_destroy)
         except Exception:
+            _plan = None
             _ui.messageBox('Failed:\n{}'.format(traceback.format_exc()), TITLE)
-            adsk.terminate()
 
 
 class _ExecuteHandler(adsk.core.CommandEventHandler):
     def notify(self, args):
         global _report
+        if _plan is None:
+            return  # cancelled or nothing to merge
         try:
             design = adsk.fusion.Design.cast(_app.activeProduct)
             _report = _apply(design, _plan)
@@ -237,12 +270,11 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
 
 class _DestroyHandler(adsk.core.CommandEventHandler):
     def notify(self, args):
+        global _plan, _report
         try:
             if _report:
                 _ui.messageBox(_report, TITLE)
-            cmd_def = _ui.commandDefinitions.itemById(CMD_ID)
-            if cmd_def:
-                cmd_def.deleteMe()
         finally:
-            _handlers.clear()
-            adsk.terminate()
+            _plan = None
+            _report = ''
+            _cmd_handlers.clear()
