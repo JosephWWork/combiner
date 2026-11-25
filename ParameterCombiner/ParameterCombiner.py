@@ -87,7 +87,14 @@ def _prepare():
         _ui.messageBox('Open a design first.', TITLE)
         return None
 
-    params = [_info(p) for p in design.userParameters]
+    try:
+        params = [_info(p) for p in design.userParameters]
+    except RuntimeError:
+        _ui.messageBox('This design has no parameters to merge.\n\n'
+                       'It is in direct modelling mode (design history is turned off). To use '
+                       'parameters, right-click the top item in the Browser and choose '
+                       '"Capture Design History".', TITLE)
+        return None
     plan = merge_logic.build_plan(params, _model_params(design))
     if not (plan.merges or plan.conflicts or plan.review):
         _ui.messageBox('No duplicate parameters found.', TITLE)
@@ -107,10 +114,20 @@ def _info(p):
 
 
 def _model_params(design):
-    """Model parameters from every component (feature/sketch dimensions)."""
+    """Model parameters from every component (feature/sketch dimensions).
+
+    A direct-modelling design (history off) has none, and Fusion raises
+    "this is not a parametric design" if asked, so skip it.
+    """
     result, seen = [], set()
+    if design.designType != adsk.fusion.DesignTypes.ParametricDesignType:
+        return result
     for comp in design.allComponents:
-        for p in comp.modelParameters:
+        try:
+            model_params = comp.modelParameters
+        except RuntimeError:
+            continue
+        for p in model_params:
             if p.name not in seen:
                 seen.add(p.name)
                 result.append(merge_logic.ParamInfo(p.name, p.expression, p.unit, p.value, p.comment))
@@ -190,7 +207,11 @@ def _apply(design, plan):
     # 2. Re-point every expression (model + user parameters) at the targets.
     mapping = plan.mapping
     rewritten = 0
-    for coll in (design.allParameters, design.userParameters):
+    if design.designType == adsk.fusion.DesignTypes.ParametricDesignType:
+        collections = (design.allParameters, design.userParameters)
+    else:
+        collections = (design.userParameters,)
+    for coll in collections:
         for p in coll:
             try:
                 old = p.expression
