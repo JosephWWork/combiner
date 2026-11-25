@@ -17,7 +17,7 @@ class ParamInfo:
     name: str
     expression: str
     unit: str
-    value: float  # Fusion internal units (cm, rad)
+    value: float  # Fusion internal units (cm, rad); None if not numeric
     comment: str = ''
     is_favorite: bool = False
 
@@ -82,7 +82,12 @@ def find_duplicates(names):
 
 
 def values_match(a, b):
-    return a.unit == b.unit and math.isclose(a.value, b.value, rel_tol=1e-9, abs_tol=1e-12)
+    if a.unit != b.unit:
+        return False
+    if a.value is None or b.value is None:
+        # Non-numeric (text / true-false) parameter: compare what was typed.
+        return a.value is None and b.value is None and a.expression.strip() == b.expression.strip()
+    return math.isclose(a.value, b.value, rel_tol=1e-9, abs_tol=1e-12)
 
 
 def rewrite_expression(expression, mapping):

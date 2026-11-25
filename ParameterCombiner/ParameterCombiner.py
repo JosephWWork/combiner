@@ -109,8 +109,16 @@ def _prepare():
     return plan if answer == adsk.core.DialogResults.DialogYes else None
 
 
+def _safe_value(p):
+    """p.value, or None for text / true-false parameters (Fusion raises on those)."""
+    try:
+        return p.value
+    except RuntimeError:
+        return None
+
+
 def _info(p):
-    return merge_logic.ParamInfo(p.name, p.expression, p.unit, p.value, p.comment, p.isFavorite)
+    return merge_logic.ParamInfo(p.name, p.expression, p.unit, _safe_value(p), p.comment, p.isFavorite)
 
 
 def _model_params(design):
@@ -130,7 +138,7 @@ def _model_params(design):
         for p in model_params:
             if p.name not in seen:
                 seen.add(p.name)
-                result.append(merge_logic.ParamInfo(p.name, p.expression, p.unit, p.value, p.comment))
+                result.append(merge_logic.ParamInfo(p.name, p.expression, p.unit, _safe_value(p), p.comment))
     return result
 
 

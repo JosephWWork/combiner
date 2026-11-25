@@ -6,8 +6,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'ParameterCombi
 import merge_logic as ml  # noqa: E402
 
 
-def P(name, expr, unit='mm', value=None, comment=''):
-    return ml.ParamInfo(name, expr, unit, value if value is not None else 0.0, comment)
+def P(name, expr, unit='mm', value=0.0, comment=''):
+    return ml.ParamInfo(name, expr, unit, value, comment)
 
 
 class FindDuplicates(unittest.TestCase):
@@ -56,6 +56,22 @@ class BuildPlan(unittest.TestCase):
     def test_unit_difference_is_conflict(self):
         plan = ml.build_plan([P('T', '1 in', 'in', 2.54), P('T_1', '25.4 mm', 'mm', 2.54)])
         self.assertEqual(len(plan.conflicts), 1)
+
+
+    def test_non_numeric_compared_by_expression(self):
+        same = ml.build_plan([P('Label', "'ABC'", '', None), P('Label_1', "'ABC'", '', None)])
+        self.assertEqual(same.mapping, {'Label_1': 'Label'})
+        diff = ml.build_plan([P('Label', "'ABC'", '', None), P('Label_1', "'XYZ'", '', None)])
+        self.assertEqual(len(diff.conflicts), 1)
+
+    def test_numeric_vs_non_numeric_is_conflict(self):
+        plan = ml.build_plan([P('A', '5', '', 5.0), P('A_1', "'5'", '', None)])
+        self.assertEqual(len(plan.conflicts), 1)
+
+    def test_non_numeric_model_param_does_not_crash(self):
+        plan = ml.build_plan([P('Width', '50 mm', value=5.0)],
+                             [P('Width_1', 'true', '', None), P('Flag', 'true', '', None)])
+        self.assertEqual([(r.duplicate, r.same_value) for r in plan.review], [('Width_1', False)])
 
 
 class ModelParameterReview(unittest.TestCase):
