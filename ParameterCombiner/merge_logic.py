@@ -2,8 +2,6 @@
 
 Nothing in this module imports adsk, so it can be unit-tested outside Fusion.
 """
-import csv
-import io
 import math
 import re
 from dataclasses import dataclass, field
@@ -12,8 +10,6 @@ from dataclasses import dataclass, field
 SUFFIX_RE = re.compile(r'^(.+)_(\d+)$')
 # An identifier inside an expression (parameter names, unit names, functions).
 IDENT_RE = re.compile(r'[^\W\d]\w*')
-# A bare number such as "25", "25.4" or "25,4" (no unit).
-NUMBER_ONLY_RE = re.compile(r'^\s*[-+]?(\d+([.,]\d*)?|[.,]\d+)([eE][-+]?\d+)?\s*$')
 
 
 @dataclass
@@ -27,25 +23,18 @@ class ParamInfo:
 
 
 @dataclass
-class Standard:
-    name: str
-    expression: str
-    unit: str = ''
-    comment: str = ''
-
-
-@dataclass
 class Merge:
     duplicate: str
     target: str
-    reason: str
 
 
 @dataclass
-class Skipped:
+class Conflict:
+    """Two user parameters that look like duplicates but differ: fix manually."""
     duplicate: str
     target: str
-    reason: str
+    duplicate_expression: str
+    target_expression: str
 
 
 @dataclass
@@ -62,10 +51,8 @@ class ReviewItem:
 @dataclass
 class Plan:
     merges: list = field(default_factory=list)
-    skipped: list = field(default_factory=list)
+    conflicts: list = field(default_factory=list)
     review: list = field(default_factory=list)
-    # target name -> new expression taken from the standards CSV
-    target_updates: dict = field(default_factory=dict)
 
     @property
     def mapping(self):
@@ -98,16 +85,6 @@ def values_match(a, b):
     return a.unit == b.unit and math.isclose(a.value, b.value, rel_tol=1e-9, abs_tol=1e-12)
 
 
-def normalize_expression(expression, unit):
-    """Append the unit to a bare number ("25" -> "25 mm") and fix decimal commas."""
-    expr = expression.strip()
-    if NUMBER_ONLY_RE.match(expr):
-        expr = expr.replace(',', '.')
-        if unit:
-            expr = f'{expr} {unit}'
-    return expr
-
-
 def rewrite_expression(expression, mapping):
     """Replace whole-identifier references using mapping (old name -> new name)."""
     if not mapping or not expression:
@@ -115,16 +92,16 @@ def rewrite_expression(expression, mapping):
     return IDENT_RE.sub(lambda m: mapping.get(m.group(0), m.group(0)), expression)
 
 
-def build_plan(params, standards=None, model_params=None):
+def build_plan(params, model_params=None):
     """Decide what to merge.
 
     params:       iterable of ParamInfo (the design's user parameters)
-    standards:    {name: Standard} from the CSV, or None
-    model_params: iterable of ParamInfo (model parameters). Only user/user pairs
-                  are merged; any pair involving a model parameter goes to
-                  plan.review for the user to look at.
+    model_params: iterable of ParamInfo (model parameters)
+
+    User/user pairs with the same value and unit are merged. User/user pairs
+    that differ go to plan.conflicts for the user to fix by hand. Any pair
+    involving a model parameter goes to plan.review and is only reported.
     """
-    standards = standards or {}
     by_name = {p.name: p for p in params}
     plan = Plan()
 
@@ -140,59 +117,7 @@ def build_plan(params, standards=None, model_params=None):
     for dup, root in sorted(find_duplicates(by_name).items()):
         d, r = by_name[dup], by_name[root]
         if values_match(d, r):
-            plan.merges.append(Merge(dup, root, 'values match'))
-            continue
-        std = standards.get(root)
-        if std is not None:
-            expr = normalize_expression(std.expression, std.unit or r.unit)
-            plan.target_updates[root] = expr
-            plan.merges.append(Merge(dup, root, f'values differ; {root} set to standard "{expr}"'))
+            plan.merges.append(Merge(dup, root))
         else:
-            plan.skipped.append(Skipped(
-                dup, root,
-                f'values differ ({r.expression} vs {d.expression}) and {root} is not in the standards CSV'))
+            plan.conflicts.append(Conflict(dup, root, d.expression, r.expression))
     return plan
-
-
-_COLUMN_ALIASES = {
-    'name': ('name', 'parameter', 'param'),
-    'expression': ('expression', 'expr', 'value'),
-    'unit': ('unit', 'units'),
-    'comment': ('comment', 'comments', 'description'),
-}
-
-
-def parse_standards(text):
-    """Parse the standards CSV into {name: Standard}.
-
-    Needs a header row with at least Name and Expression columns (Unit and
-    Comment optional; header names are case-insensitive). Comma, semicolon or
-    tab delimited.
-    """
-    text = text.lstrip('﻿')
-    try:
-        dialect = csv.Sniffer().sniff(text[:4096], delimiters=',;\t')
-    except csv.Error:
-        dialect = csv.excel
-    rows = [r for r in csv.reader(io.StringIO(text), dialect) if any(c.strip() for c in r)]
-    if not rows:
-        return {}
-
-    header = [h.strip().lower() for h in rows[0]]
-    cols = {}
-    for key, aliases in _COLUMN_ALIASES.items():
-        cols[key] = next((header.index(a) for a in aliases if a in header), None)
-    if cols['name'] is None or cols['expression'] is None:
-        raise ValueError('Standards CSV needs a header row with "Name" and "Expression" columns. '
-                         f'Found: {rows[0]}')
-
-    def cell(row, key):
-        i = cols[key]
-        return row[i].strip() if i is not None and i < len(row) else ''
-
-    standards = {}
-    for row in rows[1:]:
-        name, expr = cell(row, 'name'), cell(row, 'expression')
-        if name and expr:
-            standards[name] = Standard(name, expr, cell(row, 'unit'), cell(row, 'comment'))
-    return standards

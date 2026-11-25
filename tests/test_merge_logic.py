@@ -46,22 +46,16 @@ class BuildPlan(unittest.TestCase):
     def test_matching_values_merge(self):
         plan = ml.build_plan([P('Width', '50 mm', value=5.0), P('Width_1', '50 mm', value=5.0)])
         self.assertEqual(plan.mapping, {'Width_1': 'Width'})
-        self.assertEqual(plan.target_updates, {})
+        self.assertEqual(plan.conflicts, [])
 
-    def test_differing_value_uses_csv(self):
-        std = {'Height': ml.Standard('Height', '25', 'mm')}
-        plan = ml.build_plan([P('Height', '20 mm', value=2.0), P('Height_1', '25 mm', value=2.5)], std)
-        self.assertEqual(plan.mapping, {'Height_1': 'Height'})
-        self.assertEqual(plan.target_updates, {'Height': '25 mm'})
-
-    def test_differing_value_not_in_csv_skipped(self):
-        plan = ml.build_plan([P('Height', '20 mm', value=2.0), P('Height_1', '25 mm', value=2.5)], {})
+    def test_differing_value_is_conflict(self):
+        plan = ml.build_plan([P('Height', '20 mm', value=2.0), P('Height_1', '25 mm', value=2.5)])
         self.assertEqual(plan.mapping, {})
-        self.assertEqual(len(plan.skipped), 1)
+        self.assertEqual(plan.conflicts, [ml.Conflict('Height_1', 'Height', '25 mm', '20 mm')])
 
     def test_unit_difference_is_conflict(self):
         plan = ml.build_plan([P('T', '1 in', 'in', 2.54), P('T_1', '25.4 mm', 'mm', 2.54)])
-        self.assertEqual(len(plan.skipped), 1)
+        self.assertEqual(len(plan.conflicts), 1)
 
 
 class ModelParameterReview(unittest.TestCase):
@@ -70,7 +64,7 @@ class ModelParameterReview(unittest.TestCase):
         model = [P('Depth', '30 mm', value=3.0), P('Depth_1', '30 mm', value=3.0),
                  P('Len', '10 mm', value=1.0), P('Len_1', '12 mm', value=1.2),
                  P('Width_1', '50 mm', value=5.0), P('d1', '5 mm', value=0.5)]
-        plan = ml.build_plan(user, {}, model)
+        plan = ml.build_plan(user, model)
         self.assertEqual(plan.mapping, {})
         self.assertEqual([(r.duplicate, r.target, r.same_value) for r in plan.review],
                          [('Depth_1', 'Depth', True), ('Len_1', 'Len', False), ('Width_1', 'Width', True)])
@@ -78,32 +72,9 @@ class ModelParameterReview(unittest.TestCase):
 
     def test_user_pairs_not_in_review(self):
         user = [P('Width', '50 mm', value=5.0), P('Width_1', '50 mm', value=5.0)]
-        plan = ml.build_plan(user, {}, [P('d1', '5 mm', value=0.5)])
+        plan = ml.build_plan(user, [P('d1', '5 mm', value=0.5)])
         self.assertEqual(plan.mapping, {'Width_1': 'Width'})
         self.assertEqual(plan.review, [])
-
-
-class NormalizeExpression(unittest.TestCase):
-    def test_bare_number_gets_unit(self):
-        self.assertEqual(ml.normalize_expression('25,4', 'mm'), '25.4 mm')
-
-    def test_expression_untouched(self):
-        self.assertEqual(ml.normalize_expression('Width / 2', 'mm'), 'Width / 2')
-
-
-class ParseStandards(unittest.TestCase):
-    def test_comma(self):
-        s = ml.parse_standards('﻿Name,Unit,Expression,Comment\nWidth,mm,50,w\n\n')
-        self.assertEqual(s['Width'], ml.Standard('Width', '50', 'mm', 'w'))
-
-    def test_semicolon_any_column_order(self):
-        s = ml.parse_standards('expression;NAME;unit\n25,4;Height;mm\n')
-        self.assertEqual(s['Height'].expression, '25,4')
-        self.assertEqual(s['Height'].unit, 'mm')
-
-    def test_missing_header(self):
-        with self.assertRaises(ValueError):
-            ml.parse_standards('Width,mm,50\n')
 
 
 if __name__ == '__main__':

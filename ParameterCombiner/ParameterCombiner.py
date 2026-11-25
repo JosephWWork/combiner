@@ -1,13 +1,13 @@
 """Fusion script: merge duplicate user parameters (Width_1 -> Width).
 
 Run from Utilities > Scripts and Add-Ins. Flow:
-  1. Pick the standards CSV (used to settle duplicates whose values differ).
-  2. Review the preview and confirm.
-  3. All references are re-pointed and duplicates deleted inside one command,
+  1. Review the preview and confirm. Pairs with the same value are merged;
+     pairs with different values are listed for you to fix by hand (then
+     run again to merge them).
+  2. All references are re-pointed and duplicates deleted inside one command,
      so a single Ctrl+Z undoes the whole merge.
 """
 import importlib
-import json
 import os
 import sys
 import traceback
@@ -23,7 +23,6 @@ importlib.reload(merge_logic)  # Fusion caches modules between runs
 
 CMD_ID = 'ParameterCombiner_MergeDuplicates'
 TITLE = 'Merge Duplicate Parameters'
-SETTINGS_FILE = os.path.join(_HERE, 'settings.json')
 MAX_LINES = 40
 
 _app = None
@@ -46,25 +45,15 @@ def run(context):
         params = [_info(p) for p in design.userParameters]
         model_params = _model_params(design)
 
-        if not merge_logic.find_duplicates(p.name for p in params):
-            review = merge_logic.build_plan(params, None, model_params).review
-            if review:
-                _ui.messageBox('No duplicate user parameters to merge.\n\n'
-                               + '\n'.join(_review_lines(review)), TITLE)
-            else:
-                _ui.messageBox('No duplicate parameters found.', TITLE)
+        _plan = merge_logic.build_plan(params, model_params)
+        if not (_plan.merges or _plan.conflicts or _plan.review):
+            _ui.messageBox('No duplicate parameters found.', TITLE)
             return
-
-        standards, csv_note = _load_standards()
-        if standards is False:
-            return  # error already shown
-
-        _plan = merge_logic.build_plan(params, standards, model_params)
         if not _plan.merges:
-            _ui.messageBox(_preview_text(_plan, csv_note) + '\n\nNothing can be merged.', TITLE)
+            _ui.messageBox('Nothing to merge automatically.\n\n' + _preview_text(_plan), TITLE)
             return
 
-        answer = _ui.messageBox(_preview_text(_plan, csv_note) + '\n\nProceed with merge?', TITLE,
+        answer = _ui.messageBox(_preview_text(_plan) + '\n\nProceed with merge?', TITLE,
                                 adsk.core.MessageBoxButtonTypes.YesNoButtonType,
                                 adsk.core.MessageBoxIconTypes.QuestionIconType)
         if answer != adsk.core.DialogResults.DialogYes:
@@ -100,49 +89,6 @@ def _model_params(design):
     return result
 
 
-# ---------------------------------------------------------------- standards CSV
-
-def _load_standards():
-    """Returns (standards_dict_or_None, note). standards is False on a read error."""
-    settings = _read_settings()
-    dlg = _ui.createFileDialog()
-    dlg.title = 'Select parameter standards CSV (Cancel to continue without)'
-    dlg.filter = 'CSV files (*.csv);;All files (*.*)'
-    last = settings.get('last_csv')
-    if last and os.path.isdir(os.path.dirname(last)):
-        dlg.initialDirectory = os.path.dirname(last)
-        dlg.initialFilename = os.path.basename(last)
-    if dlg.showOpen() != adsk.core.DialogResults.DialogOK:
-        return None, 'No standards CSV selected: differing duplicates will be skipped.'
-
-    path = dlg.filename
-    try:
-        with open(path, encoding='utf-8-sig', newline='') as f:
-            standards = merge_logic.parse_standards(f.read())
-    except Exception as e:
-        _ui.messageBox(f'Could not read {path}:\n{e}', TITLE)
-        return False, ''
-    settings['last_csv'] = path
-    _write_settings(settings)
-    return standards, f'Standards: {os.path.basename(path)} ({len(standards)} parameters)'
-
-
-def _read_settings():
-    try:
-        with open(SETTINGS_FILE, encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def _write_settings(settings):
-    try:
-        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(settings, f, indent=2)
-    except Exception:
-        pass
-
-
 # ---------------------------------------------------------------- reporting
 
 def _limit(lines):
@@ -174,16 +120,23 @@ def _review_lines(review):
     return lines
 
 
-def _preview_text(plan, csv_note):
-    lines = [csv_note, '']
+def _conflict_lines(conflicts):
+    lines = [f'User parameters with DIFFERENT values ({len(conflicts)}) - not merged. '
+             'Fix the value of one, then run again:']
+    lines += _limit([f'  {c.duplicate} = {c.duplicate_expression}   vs   {c.target} = {c.target_expression}'
+                     for c in conflicts])
+    return lines
+
+
+def _preview_text(plan):
+    lines = []
     if plan.merges:
-        lines.append(f'Will merge {len(plan.merges)} user parameter(s):')
-        lines += _limit([f'  {m.duplicate} -> {m.target}  ({m.reason})' for m in plan.merges])
-    if plan.skipped:
-        lines += ['', f'Will skip {len(plan.skipped)}:']
-        lines += _limit([f'  {s.duplicate}: {s.reason}' for s in plan.skipped])
+        lines.append(f'Will merge {len(plan.merges)} user parameter(s) with the same value:')
+        lines += _limit([f'  {m.duplicate} -> {m.target}' for m in plan.merges])
+    if plan.conflicts:
+        lines += ([''] if lines else []) + _conflict_lines(plan.conflicts)
     if plan.review:
-        lines += [''] + _review_lines(plan.review)
+        lines += ([''] if lines else []) + _review_lines(plan.review)
     return '\n'.join(lines)
 
 
@@ -193,15 +146,7 @@ def _apply(design, plan):
     user_params = design.userParameters
     errors = []
 
-    # 1. Set targets to their standard value where the duplicate differed.
-    for name, expr in plan.target_updates.items():
-        p = user_params.itemByName(name)
-        try:
-            p.expression = expr
-        except Exception as e:
-            errors.append(f'Could not set {name} = {expr}: {e}')
-
-    # 2. Carry comment / favourite over if the target lacks them.
+    # 1. Carry comment / favourite over if the target lacks them.
     for m in plan.merges:
         d, t = user_params.itemByName(m.duplicate), user_params.itemByName(m.target)
         if not d or not t:
@@ -214,7 +159,7 @@ def _apply(design, plan):
         except Exception:
             pass
 
-    # 3. Re-point every expression (model + user parameters) at the targets.
+    # 2. Re-point every expression (model + user parameters) at the targets.
     mapping = plan.mapping
     rewritten = 0
     for coll in (design.allParameters, design.userParameters):
@@ -228,7 +173,7 @@ def _apply(design, plan):
             except Exception as e:
                 errors.append(f'Could not update {p.name}: {e}')
 
-    # 4. Delete duplicates; repeat while progress is made (chains).
+    # 3. Delete duplicates; repeat while progress is made (chains).
     pending = [m.duplicate for m in plan.merges]
     deleted = []
     while pending:
@@ -252,11 +197,8 @@ def _apply(design, plan):
 
     lines = [f'Merged and deleted {len(deleted)} duplicate(s).',
              f'Updated {rewritten} expression(s).']
-    if plan.target_updates:
-        lines.append(f'Set {len(plan.target_updates)} parameter(s) to the standards CSV value.')
-    if plan.skipped:
-        lines += ['', f'Skipped {len(plan.skipped)}:']
-        lines += _limit([f'  {s.duplicate}: {s.reason}' for s in plan.skipped])
+    if plan.conflicts:
+        lines += [''] + _conflict_lines(plan.conflicts)
     if plan.review:
         lines += [''] + _review_lines(plan.review)
     if errors:
