@@ -64,6 +64,24 @@ class BuildPlan(unittest.TestCase):
         self.assertEqual(len(plan.skipped), 1)
 
 
+class ModelParameterReview(unittest.TestCase):
+    def test_model_duplicates_reported_not_merged(self):
+        user = [P('Width', '50 mm', value=5.0)]
+        model = [P('Depth', '30 mm', value=3.0), P('Depth_1', '30 mm', value=3.0),
+                 P('Len', '10 mm', value=1.0), P('Len_1', '12 mm', value=1.2),
+                 P('Width_1', '50 mm', value=5.0), P('d1', '5 mm', value=0.5)]
+        plan = ml.build_plan(user, {}, model)
+        self.assertEqual(plan.mapping, {})
+        self.assertEqual([(r.duplicate, r.target, r.same_value) for r in plan.review],
+                         [('Depth_1', 'Depth', True), ('Len_1', 'Len', False), ('Width_1', 'Width', True)])
+
+    def test_user_pairs_not_in_review(self):
+        user = [P('Width', '50 mm', value=5.0), P('Width_1', '50 mm', value=5.0)]
+        plan = ml.build_plan(user, {}, [P('d1', '5 mm', value=0.5)])
+        self.assertEqual(plan.mapping, {'Width_1': 'Width'})
+        self.assertEqual(plan.review, [])
+
+
 class NormalizeExpression(unittest.TestCase):
     def test_bare_number_gets_unit(self):
         self.assertEqual(ml.normalize_expression('25,4', 'mm'), '25.4 mm')

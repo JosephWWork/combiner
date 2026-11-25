@@ -44,15 +44,22 @@ def run(context):
             return
 
         params = [_info(p) for p in design.userParameters]
+        model_params = _model_params(design)
+
         if not merge_logic.find_duplicates(p.name for p in params):
-            _ui.messageBox('No duplicate user parameters found.', TITLE)
+            review = merge_logic.build_plan(params, None, model_params).review
+            if review:
+                _ui.messageBox('No duplicate user parameters to merge.\n\n'
+                               + '\n'.join(_review_lines(review)), TITLE)
+            else:
+                _ui.messageBox('No duplicate parameters found.', TITLE)
             return
 
         standards, csv_note = _load_standards()
         if standards is False:
             return  # error already shown
 
-        _plan = merge_logic.build_plan(params, standards)
+        _plan = merge_logic.build_plan(params, standards, model_params)
         if not _plan.merges:
             _ui.messageBox(_preview_text(_plan, csv_note) + '\n\nNothing can be merged.', TITLE)
             return
@@ -80,6 +87,17 @@ def run(context):
 
 def _info(p):
     return merge_logic.ParamInfo(p.name, p.expression, p.unit, p.value, p.comment, p.isFavorite)
+
+
+def _model_params(design):
+    """Model parameters from every component (feature/sketch dimensions)."""
+    result, seen = [], set()
+    for comp in design.allComponents:
+        for p in comp.modelParameters:
+            if p.name not in seen:
+                seen.add(p.name)
+                result.append(merge_logic.ParamInfo(p.name, p.expression, p.unit, p.value, p.comment))
+    return result
 
 
 # ---------------------------------------------------------------- standards CSV
@@ -133,14 +151,28 @@ def _limit(lines):
     return lines
 
 
+def _review_lines(review):
+    lines = [f'Model parameters that could possibly be merged ({len(review)}) - '
+             'not changed, review manually:']
+    for r in review:
+        if r.same_value:
+            status = f'same value ({r.target_expression})'
+        else:
+            status = f'DIFFERENT value ({r.target_expression} vs {r.duplicate_expression})'
+        lines.append(f'  {r.duplicate} / {r.target}: {status}')
+    return _limit(lines)
+
+
 def _preview_text(plan, csv_note):
     lines = [csv_note, '']
     if plan.merges:
-        lines.append(f'Will merge {len(plan.merges)}:')
+        lines.append(f'Will merge {len(plan.merges)} user parameter(s):')
         lines += _limit([f'  {m.duplicate} -> {m.target}  ({m.reason})' for m in plan.merges])
     if plan.skipped:
         lines += ['', f'Will skip {len(plan.skipped)}:']
         lines += _limit([f'  {s.duplicate}: {s.reason}' for s in plan.skipped])
+    if plan.review:
+        lines += [''] + _review_lines(plan.review)
     return '\n'.join(lines)
 
 
@@ -214,6 +246,8 @@ def _apply(design, plan):
     if plan.skipped:
         lines += ['', f'Skipped {len(plan.skipped)}:']
         lines += _limit([f'  {s.duplicate}: {s.reason}' for s in plan.skipped])
+    if plan.review:
+        lines += [''] + _review_lines(plan.review)
     if errors:
         lines += ['', 'Problems:'] + _limit(['  ' + e for e in errors])
     lines += ['', 'Ctrl+Z undoes the whole merge.']

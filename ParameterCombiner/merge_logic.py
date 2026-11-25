@@ -49,9 +49,20 @@ class Skipped:
 
 
 @dataclass
+class ReviewItem:
+    """A possible duplicate involving a model parameter: reported, never merged."""
+    duplicate: str
+    target: str
+    same_value: bool
+    duplicate_expression: str
+    target_expression: str
+
+
+@dataclass
 class Plan:
     merges: list = field(default_factory=list)
     skipped: list = field(default_factory=list)
+    review: list = field(default_factory=list)
     # target name -> new expression taken from the standards CSV
     target_updates: dict = field(default_factory=dict)
 
@@ -103,15 +114,27 @@ def rewrite_expression(expression, mapping):
     return IDENT_RE.sub(lambda m: mapping.get(m.group(0), m.group(0)), expression)
 
 
-def build_plan(params, standards=None):
+def build_plan(params, standards=None, model_params=None):
     """Decide what to merge.
 
-    params:    iterable of ParamInfo (the design's user parameters)
-    standards: {name: Standard} from the CSV, or None
+    params:       iterable of ParamInfo (the design's user parameters)
+    standards:    {name: Standard} from the CSV, or None
+    model_params: iterable of ParamInfo (model parameters). Only user/user pairs
+                  are merged; any pair involving a model parameter goes to
+                  plan.review for the user to look at.
     """
     standards = standards or {}
     by_name = {p.name: p for p in params}
     plan = Plan()
+
+    model_by_name = {p.name: p for p in (model_params or []) if p.name not in by_name}
+    if model_by_name:
+        everything = {**model_by_name, **by_name}
+        for dup, root in sorted(find_duplicates(everything).items()):
+            if dup in model_by_name or root in model_by_name:
+                d, r = everything[dup], everything[root]
+                plan.review.append(ReviewItem(dup, root, values_match(d, r), d.expression, r.expression))
+
     for dup, root in sorted(find_duplicates(by_name).items()):
         d, r = by_name[dup], by_name[root]
         if values_match(d, r):
