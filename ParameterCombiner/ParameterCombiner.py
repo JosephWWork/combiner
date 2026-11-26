@@ -7,7 +7,7 @@ Adds "Merge Duplicate Parameters" to Design > Solid > Modify. Clicking it:
   2. All references are re-pointed and duplicates deleted inside one command,
      so a single Ctrl+Z undoes the whole merge.
 """
-import importlib
+import importlib.util
 import os
 import sys
 import traceback
@@ -16,10 +16,25 @@ import adsk.core
 import adsk.fusion
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
-import merge_logic  # noqa: E402
-importlib.reload(merge_logic)  # Fusion caches modules between runs
+
+
+def _load_local(name):
+    """Load <name>.py from this add-in's folder by exact path.
+
+    A plain `import` searches sys.path, which Fusion shares between all
+    scripts and add-ins, so it could pick up a same-named file from another
+    folder (e.g. an old copy under API/Scripts). Loading by path, under a
+    unique module name, always gets ours and always the current file.
+    """
+    module_name = f'ParameterCombiner_{name}'
+    spec = importlib.util.spec_from_file_location(module_name, os.path.join(_HERE, f'{name}.py'))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module  # dataclasses look the module up here
+    spec.loader.exec_module(module)
+    return module
+
+
+merge_logic = _load_local('merge_logic')
 
 CMD_ID = 'ParameterCombiner_MergeDuplicates'
 TITLE = 'Merge Duplicate Parameters'
